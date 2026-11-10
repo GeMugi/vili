@@ -56,19 +56,17 @@ jobs:
         working-directory: kernel
         run: curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
 
-      - name: Exportar path_umount (necessario p/ KSU no 5.4)
+      - name: Backports p/ KSU sem alterar estruturas do kernel
         working-directory: kernel
         run: |
-          python3 - <<'PY'
-          p = "fs/namespace.c"
-          s = open(p).read()
-          old = "\t mntput_no_expire(mnt);\n\t return ret;\n }\n"
-          if "EXPORT_SYMBOL(path_umount)" not in s:
-              assert s.count(old) == 1, "path_umount nao encontrado"
-              s = s.replace(old, old + "EXPORT_SYMBOL(path_umount);\n")
-              open(p, "w").write(s)
-          print("ok")
-          PY
+          # path_umount (+ export) aplicado antes; o Kbuild do KSU detecta e nao refaz
+          git apply ../patches/ksu-5.4-path_umount.patch
+          # O Kbuild do KSU adiciona "filter_count" em struct seccomp (dentro de task_struct).
+          # No 5.4 esse campo nao e usado, e mudar task_struct quebra os modulos do vendor.
+          # Um comentario com o texto faz o Kbuild pular esse patch.
+          sed -i 's|^struct seccomp {|/* atomic_t filter_count; -- desativado: manter layout do stock */\nstruct seccomp {|' include/linux/seccomp.h
+          grep -n "filter_count" include/linux/seccomp.h
+          grep -n "EXPORT_SYMBOL(path_umount)" fs/namespace.c
 
       - name: Relaxar checagem de versao dos modulos
         if: ${{ inputs.relax_modversions != false }}
