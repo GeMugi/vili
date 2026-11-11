@@ -2,7 +2,7 @@ name: Build D8G kernel (vili) + KernelSU
 
 # Base: D8G Kernel (diphons) - kernel monolitico (sem modulos), feito p/ MIUI/HyperOS e AOSP.
 # Matriz: "builtin" = KSU original do D8G (referencia, deve ligar)
-#         "next"    = KernelSU-Next legacy com manual hook no lugar do KSU original
+#         "next"    = KernelSU-Next legacy (syscall table hook) no lugar do KSU original
 
 on:
   workflow_dispatch:
@@ -54,6 +54,24 @@ jobs:
           # O Kbuild do KSU-Next adiciona "filter_count" em struct seccomp (task_struct).
           # No 5.4 nao e usado; o comentario faz o Kbuild pular esse patch.
           sed -i 's|^struct seccomp {|/* atomic_t filter_count; -- desativado */\nstruct seccomp {|' include/linux/seccomp.h
+          # Desliga os hooks manuais do KSU antigo do D8G (assinaturas incompativeis);
+          # o KSU-Next vai usar o modo "syscall table hook", que nao precisa deles.
+          for f in fs/devpts/inode.c fs/exec.c fs/stat.c fs/read_write.c fs/open.c drivers/input/input.c; do
+            sed -i 's/IS_ENABLED(CONFIG_KSU)/0 \/* D8G old KSU hook *\//; s/^#ifdef CONFIG_KSU$/#if 0 \/* D8G old KSU hook *\//' "$f"
+          done
+          grep -c "D8G old KSU hook" fs/exec.c fs/devpts/inode.c
+          # path_umount ja existe no D8G; exporta para o LTO nao descartar
+          python3 - <<'PY2'
+          import re
+          p = "fs/namespace.c"
+          s = open(p).read()
+          if "EXPORT_SYMBOL(path_umount)" not in s:
+              i = s.index("\nint path_umount(struct path *path, int flags)")
+              j = s.index("\n}\n", i) + 3
+              s = s[:j] + "EXPORT_SYMBOL(path_umount);\n" + s[j:]
+              open(p, "w").write(s)
+          print("path_umount exportado")
+          PY2
           ls -la drivers/kernelsu
 
       - name: Configurar
@@ -62,7 +80,7 @@ jobs:
           make $MAKE_ARGS vendor/lahaina-perf_defconfig vendor/xiaomi/vili.config
           scripts/config --file out/.config -e KSU
           if [ "${{ matrix.ksu }}" = "next" ]; then
-            scripts/config --file out/.config -e KSU_MANUAL_HOOK
+            scripts/config --file out/.config -d KSU_MANUAL_HOOK -d KSU_KPROBES_HOOK -e KSU_SYSCALL_TABLE_HOOK
           fi
           make $MAKE_ARGS olddefconfig
           grep -E '^CONFIG_(KSU|LOCALVERSION|MODULES)' out/.config || true
