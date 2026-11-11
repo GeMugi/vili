@@ -79,6 +79,8 @@ jobs:
           mkdir -p out
           cp ../configs/vilikernel.config out/.config
           scripts/config --file out/.config -e KSU -d KSU_MANUAL_HOOK -d KSU_KPROBES_HOOK -e KSU_SYSCALL_TABLE_HOOK
+          # Opcoes que existem neste codigo mas faltam na config extraida
+          scripts/config --file out/.config --set-val LITTLE_CPU_MASK 15 --set-val BIG_CPU_MASK 112 --set-val PRIME_CPU_MASK 128 -d F2FS_IOSTAT
           make $MAKE_ARGS olddefconfig
           grep -E '^CONFIG_(KSU|LOCALVERSION|MODVERSIONS|LTO_CLANG|CFI_CLANG)' out/.config
 
