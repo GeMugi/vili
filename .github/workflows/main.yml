@@ -35,7 +35,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,9 +43,11 @@ jobs:
       - name: Liberar espaco e instalar dependencias
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio zip unzip \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 lz4 curl git
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y --fix-missing bc bison flex libssl-dev libelf-dev cpio zip unzip \
+              gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 lz4 curl git && break
+            echo "apt falhou (tentativa $i)"; sleep 30
+          done
 
       - name: Baixar codigo do kernel
         run: git clone --depth=1 -b "${{ inputs.kernel_branch || 'lineage-22.2' }}" "${{ inputs.kernel_repo || 'https://github.com/LineageOS/android_kernel_xiaomi_sm8350' }}" kernel
@@ -100,7 +102,7 @@ jobs:
             make $MAKE_ARGS vendor/lahaina-qgki_defconfig vendor/debugfs.config \
               vendor/xiaomi_QGKI.config vendor/vili_QGKI.config
           fi
-          if [ "${{ inputs.ksu }}" != "false" ]; then scripts/config --file out/.config -e KSU -e KPROBES -e EXT4_FS; fi
+          if [ "${{ inputs.ksu }}" != "false" ]; then scripts/config --file out/.config -e KSU -d KSU_MANUAL_HOOK -d KSU_KPROBES_HOOK -e KSU_SYSCALL_TABLE_HOOK -e EXT4_FS; fi
           scripts/config --file out/.config -d MODULE_SIG_FORCE
           make $MAKE_ARGS olddefconfig
           grep -E '^CONFIG_(KSU|LOCALVERSION|LTO_CLANG|CFI_CLANG|MODVERSIONS)' out/.config
@@ -109,17 +111,17 @@ jobs:
         working-directory: kernel
         run: |
           set -o pipefail
-          make -j$(nproc) $MAKE_ARGS KCFLAGS="-Wno-error" Image 2>&1 | tee ../build.log
+          make -j$(nproc) $MAKE_ARGS KCFLAGS="-Wno-error" Image Image.gz 2>&1 | tee ../build.log
           cat out/include/generated/utsrelease.h
 
-      - name: Gerar zip AnyKernel3
+      - name: Gerar zip AnyKernel3 (com dtb/dtbo do vilikernel)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
-          rm -rf ak3/.git ak3/README.md ak3/modules ak3/patch ak3/ramdisk
-          sed -i 's/^kernel.string=.*/kernel.string=vili + KernelSU-Next/' ak3/anykernel.sh
-          sed -i 's/^do.devicecheck=.*/do.devicecheck=1/; s/^device.name1=.*/device.name1=vili/' ak3/anykernel.sh
-          sed -i 's|^BLOCK=.*|BLOCK=boot;|; s/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' ak3/anykernel.sh
-          cp kernel/out/arch/arm64/boot/Image ak3/
+          rm -rf ak3/.git ak3/README.md ak3/modules ak3/patch ak3/ramdisk/* ak3/anykernel.sh
+          cp patches/anykernel-vili.sh ak3/anykernel.sh
+          sed -i 's/^kernel.string=.*/kernel.string=LineageOS 5.4.289 vili + KernelSU-Next/' ak3/anykernel.sh
+          cp kernel/out/arch/arm64/boot/Image.gz ak3/
+          cp prebuilt/vilikernel/dtb prebuilt/vilikernel/dtbo.img ak3/
           (cd ak3 && zip -r9 ../vili-ksunext-AK3.zip .)
 
       - name: Gerar boot.img pronto
