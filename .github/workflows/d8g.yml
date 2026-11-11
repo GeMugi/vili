@@ -24,7 +24,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -36,9 +36,11 @@ jobs:
       - name: Instalar dependencias
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev cpio zip unzip \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 lz4 curl git
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y --fix-missing bc bison flex libssl-dev libelf-dev cpio zip unzip \
+              gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 lz4 curl git && break
+            echo "apt falhou (tentativa $i), aguardando..."; sleep 30
+          done
 
       - name: Baixar kernel D8G
         run: git clone --depth=1 -b "${{ inputs.kernel_branch || '15' }}" "$KERNEL_REPO" kernel
