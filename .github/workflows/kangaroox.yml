@@ -1,0 +1,110 @@
+name: Build KangarooX-base kernel (vili) + KernelSU-Next
+
+# Base: codigo 5.4.234 "kangaroox kernel for vili" (donvito007), o mesmo ramo do vilikernel.zip
+# que funciona no HyperOS. Config = extraida do proprio vilikernel (IKCONFIG).
+# dtb/dtbo = os do vilikernel.zip (comprovadamente funcionam com a tela do aparelho).
+
+on:
+  workflow_dispatch:
+    inputs:
+      relax_modversions:
+        description: "Aceitar modulos do vendor com CRC diferente"
+        type: boolean
+        default: true
+
+env:
+  KERNEL_REPO: https://github.com/donvito007/kernel_xiaomi_sm8350-1
+  KERNEL_BRANCH: main
+  CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r416183b
+  CLANG_BRANCH: "11.0"
+  MAKE_ARGS: >-
+    O=out ARCH=arm64 LLVM=1 LLVM_IAS=1
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && sudo apt-get install -y --fix-missing bc bison flex libssl-dev libelf-dev cpio zip unzip \
+              gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 lz4 curl git && break
+            echo "apt falhou (tentativa $i)"; sleep 30
+          done
+
+      - name: Baixar kernel e Clang
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" kernel
+          git clone --depth=1 -b "$CLANG_BRANCH" "$CLANG_REPO" clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+
+      - name: Trocar KSU antigo pelo KernelSU-Next (legacy, syscall table hook)
+        working-directory: kernel
+        run: |
+          # O repositorio traz um KSU antigo como link quebrado; remove
+          rm -rf drivers/kernelsu KernelSU
+          sed -i '/kernelsu/d' drivers/Makefile drivers/Kconfig
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
+          # Hooks manuais antigos (assinaturas incompativeis) -> desligados
+          sed -i 's|^\(\s*ksu_handle_.*// call KSU hook first\)|// \1|' fs/exec.c fs/stat.c fs/read_write.c fs/open.c
+          grep -n "call KSU hook first" fs/exec.c fs/stat.c fs/read_write.c fs/open.c
+          # path_umount (+ export p/ o LTO)
+          git apply ../patches/ksu-5.4-path_umount.patch
+          # Nao alterar task_struct (modulos do vendor dependem do layout)
+          sed -i '0,/^struct seccomp {/s|^struct seccomp {|/* atomic_t filter_count; -- desativado */\nstruct seccomp {|' include/linux/seccomp.h
+
+      - name: Relaxar checagem de versao dos modulos
+        if: ${{ inputs.relax_modversions != false }}
+        working-directory: kernel
+        run: |
+          python3 - <<'PY'
+          import re
+          p = "kernel/module.c"
+          s = open(p).read()
+          new, n = re.subn(r'(disagrees about version of symbol %s\\n",\s*info->name,\s*symname\);\s*)return 0;',
+                           r'\1return 1;', s, count=1)
+          if n != 1:
+              raise SystemExit("check_version nao encontrado")
+          open(p, "w").write(new)
+          PY
+
+      - name: Configurar
+        working-directory: kernel
+        run: |
+          mkdir -p out
+          cp ../configs/vilikernel.config out/.config
+          scripts/config --file out/.config -e KSU -d KSU_MANUAL_HOOK -d KSU_KPROBES_HOOK -e KSU_SYSCALL_TABLE_HOOK
+          make $MAKE_ARGS olddefconfig
+          grep -E '^CONFIG_(KSU|LOCALVERSION|MODVERSIONS|LTO_CLANG|CFI_CLANG)' out/.config
+
+      - name: Compilar
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          make -j$(nproc) $MAKE_ARGS KCFLAGS="-Wno-error" Image.gz 2>&1 | tee ../build.log
+          cat out/include/generated/utsrelease.h
+
+      - name: Empacotar AnyKernel3 (mesmo esquema do vilikernel.zip)
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git ak3/README.md ak3/modules ak3/patch ak3/ramdisk/* ak3/anykernel.sh
+          cp patches/anykernel-vili.sh ak3/anykernel.sh
+          sed -i 's/^kernel.string=.*/kernel.string=KangarooX-base vili + KernelSU-Next/' ak3/anykernel.sh
+          cp kernel/out/arch/arm64/boot/Image.gz ak3/
+          cp prebuilt/vilikernel/dtb prebuilt/vilikernel/dtbo.img ak3/
+          (cd ak3 && zip -r9 ../kangaroox-ksunext-AK3.zip .)
+
+      - name: Publicar resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kangaroox-ksunext
+          path: |
+            kangaroox-ksunext-AK3.zip
+            build.log
+          if-no-files-found: warn
